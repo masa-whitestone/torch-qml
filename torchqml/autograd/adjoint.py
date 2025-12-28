@@ -91,57 +91,70 @@ def apply_gate(state, gate_matrix, targets, n_qubits):
     new_state = new_state_perm.permute(inv_perm)
     return new_state.reshape(batch_size, -1)
 
-def get_gate_matrix_tensor(name, param, device):
+def get_gate_matrix_tensor(name, param, device, adjoint=False, controls=None):
     """Factory for gate matrices (differentiable)."""
+    if controls is None:
+        controls = []
+        
+    mat = None
+    
+    # Base Matrix Generation
     if name == 'rx':
-        # RX(theta) = [[cos(t/2), -i sin(t/2)], [-i sin(t/2), cos(t/2)]]
+        # RX(theta)
         theta = param
+        if adjoint: theta = -theta
         c = torch.cos(theta / 2)
         s = torch.sin(theta / 2)
-        zero = torch.zeros_like(c)
         # [[c, -is], [-is, c]]
-        # Stack: [ [c, -is], [-is, c] ]
-        # Shape: [batch, 2, 2]
         row1 = torch.stack([c + 0j, -1j * s], dim=1)
         row2 = torch.stack([-1j * s, c + 0j], dim=1)
-        return torch.stack([row1, row2], dim=1)
+        mat = torch.stack([row1, row2], dim=1)
     
     elif name == 'ry':
-        # RY(theta) = [[cos, -sin], [sin, cos]]
         theta = param
+        if adjoint: theta = -theta
         c = torch.cos(theta / 2)
         s = torch.sin(theta / 2)
         row1 = torch.stack([c + 0j, -s + 0j], dim=1)
         row2 = torch.stack([s + 0j, c + 0j], dim=1)
-        return torch.stack([row1, row2], dim=1)
+        mat = torch.stack([row1, row2], dim=1)
         
-    elif name == 'rz':
-        # RZ(theta) = [[e^{-it/2}, 0], [0, e^{it/2}]]
+    elif name == 'rz' or name == 'r1':
+        # RZ(theta)
         theta = param
+        if adjoint: theta = -theta
         e_neg = torch.exp(-0.5j * theta)
         e_pos = torch.exp(0.5j * theta)
         zero = torch.zeros_like(theta, dtype=torch.complex128)
         row1 = torch.stack([e_neg, zero], dim=1)
         row2 = torch.stack([zero, e_pos], dim=1)
-        return torch.stack([row1, row2], dim=1)
+        mat = torch.stack([row1, row2], dim=1)
+        # Note: R1 differs from RZ by global phase but relative phase is same.
+        # R1(t) = [[1, 0], [0, e^it]]. RZ(t) = [[e^-it/2, 0], [0, e^it/2]].
+        # For expectation values, global phase cancels.
     
     elif name == 'h':
         val = 1 / np.sqrt(2)
         mat = torch.tensor([[val, val], [val, -val]], dtype=torch.complex128, device=device)
-        return mat
         
     elif name == 'x':
         mat = torch.tensor([[0, 1], [1, 0]], dtype=torch.complex128, device=device)
-        return mat
         
     elif name == 'y':
         mat = torch.tensor([[0, -1j], [1j, 0]], dtype=torch.complex128, device=device)
-        return mat
 
     elif name == 'z':
         mat = torch.tensor([[1, 0], [0, -1]], dtype=torch.complex128, device=device)
-        return mat
         
+    elif name == 's':
+        # S = [[1, 0], [0, i]]
+        mat = torch.tensor([[1, 0], [0, 1j]], dtype=torch.complex128, device=device)
+        
+    elif name == 't':
+         # T = [[1, 0], [0, e^i pi/4]]
+        phase = np.exp(1j * np.pi / 4)
+        mat = torch.tensor([[1, 0], [0, phase]], dtype=torch.complex128, device=device)
+
     elif name == 'cnot' or name == 'cx':
         # 4x4 matrix
         mat = torch.tensor([
@@ -150,10 +163,67 @@ def get_gate_matrix_tensor(name, param, device):
             [0, 0, 0, 1],
             [0, 0, 1, 0]
         ], dtype=torch.complex128, device=device)
-        return mat
-    
-    # Fallback/TODO: Add more gates
-    return torch.eye(2, dtype=torch.complex128, device=device)
+        
+    elif name == 'swap':
+        mat = torch.tensor([
+            [1, 0, 0, 0],
+            [0, 0, 1, 0],
+            [0, 1, 0, 0],
+            [0, 0, 0, 1]
+        ], dtype=torch.complex128, device=device)
+
+    else:
+        # Check if it is special name
+        mat = torch.eye(2, dtype=torch.complex128, device=device)
+        
+    # Handle Adjoint (Non-parametric)
+    if adjoint and name not in ['rx', 'ry', 'rz', 'r1']:
+        # Conjugate transpose
+        if mat.ndim == 3: # Batch
+             mat = mat.conj().transpose(1, 2)
+        else:
+             mat = mat.conj().T
+             
+    # Handle Controls
+    if len(controls) > 0 and name not in ['cnot', 'cx']: # CX handles its own control logic usually
+         # If CX is name, it means 1 control 1 target pre-baked
+         # If we have 'x' with controls=[0], that is CX.
+         
+         # Construct Controlled Matrix
+         # P0 = |0><0| (x) I ... I
+         # P1 = |1><1| (x) U
+         # General definition for 1 control:
+         # C(U) = [[I, 0], [0, U]] (block diagonal)
+         
+         # For tensor implementation:
+         # We need to construct full block matrix or use specific application logic.
+         # Constructing matrix:
+         # dim = 2^(n_controls + gate_qubits)
+         
+         # Recursive construction for multiple controls
+         current_mat = mat
+         for _ in controls:
+             # Expand: [[I, 0], [0, mat]]
+             if current_mat.ndim == 3: # Batch [B, D, D]
+                 B, D, _ = current_mat.shape
+                 I = torch.eye(D, dtype=current_mat.dtype, device=current_mat.device).unsqueeze(0).expand(B, -1, -1)
+                 Z = torch.zeros(B, D, D, dtype=current_mat.dtype, device=current_mat.device)
+                 # Row 1: I, Z
+                 # Row 2: Z, mat
+                 row1 = torch.cat([I, Z], dim=2)
+                 row2 = torch.cat([Z, current_mat], dim=2)
+                 current_mat = torch.cat([row1, row2], dim=1)
+             else:
+                 D = current_mat.shape[0]
+                 I = torch.eye(D, dtype=current_mat.dtype, device=current_mat.device)
+                 Z = torch.zeros(D, D, dtype=current_mat.dtype, device=current_mat.device)
+                 row1 = torch.cat([I, Z], dim=1)
+                 row2 = torch.cat([Z, current_mat], dim=1)
+                 current_mat = torch.cat([row1, row2], dim=0)
+         
+         mat = current_mat
+
+    return mat
 
 class PyTorchAdjointFunction(torch.autograd.Function):
     @staticmethod
@@ -185,41 +255,41 @@ class PyTorchAdjointFunction(torch.autograd.Function):
         
         for op in operations:
             name = op.name
+            # Handle Qubit objects in targets or controls
             targets = [t.index if isinstance(t, tq.Qubit) else t for t in op.targets]
+            controls = [c.index if isinstance(c, tq.Qubit) else c for c in getattr(op, "controls", [])]
+            adjoint = getattr(op, "adjoint", False)
             
+            # If we have controls, we must include them in 'active qubits' for apply_gate
+            # apply_gate expects 'targets' to list ALL qubits involved in gate matrix.
+            # And gate matrix should use control convention (controls first, then targets)
+            # Our recursive construction puts controls as MSBs relative to target?
+            # recursive: cat([I, Z], [Z, mat]) means control is on first qubit of the new block.
+            # So active_qubits = controls + targets
+            
+            active_qubits = controls + targets
+
             # Determine Matrix
             mat = None
             p_idx = None
             
             # Check if parameterized
             if op.is_parametric and len(op.parameters) > 0:
-                # Find which param from 'params' tensor corresponds to this op
-                # In torchqml, parameters are passed as list of Parameter objects.
-                # 'params' arg here is the Tensor passed to apply().
-                # We assume 'operations' struct allows identifying the param.
-                # IMPORTANT: The 'params' tensor passed to forward is just values.
-                # We need mapping.
-                
-                # For this implementation, we assume 'operations' contains a 'param_index' 
-                # that points to the column in 'params'.
-                # We need to preprocess operations to add this index before calling apply.
-                
                 if hasattr(op, 'param_idx'):
                     p_idx = op.param_idx
                     # Get param for batch
                     p_val = params[:, p_idx]
-                    mat = get_gate_matrix_tensor(name, p_val, device)
+                    mat = get_gate_matrix_tensor(name, p_val, device, adjoint, controls)
                 else:
-                    # Non-parametric usage of parametric gate? Or constant param.
-                    # Handle constant params later. For now assume all are trained.
-                    mat = get_gate_matrix_tensor(name, torch.zeros(batch_size, device=device), device)
+                    mat = get_gate_matrix_tensor(name, torch.zeros(batch_size, device=device), device, adjoint, controls)
             else:
-                mat = get_gate_matrix_tensor(name, None, device)
+                mat = get_gate_matrix_tensor(name, None, device, adjoint, controls)
             
             # Apply
-            current_state = apply_gate(current_state, mat, targets, n_qubits)
+            current_state = apply_gate(current_state, mat, active_qubits, n_qubits)
             intermediate_states.append(current_state)
-            saved_ops.append((name, targets, mat, p_idx))
+            # Save correct info for backward
+            saved_ops.append((name, targets, controls, adjoint, mat, p_idx))
             
         ctx.saved_ops = saved_ops
         ctx.intermediate_states = intermediate_states
@@ -309,13 +379,19 @@ class PyTorchAdjointFunction(torch.autograd.Function):
         
         # Backprop
         for k in range(len(saved_ops) - 1, -1, -1):
-            name, targets, mat, p_idx = saved_ops[k]
+            name, targets, controls, adjoint, mat, p_idx = saved_ops[k]
             psi_prev = intermediate_states[k] # |psi_{k}> input to this gate
+            active_qubits = controls + targets
             
             # 1. Update lambda: |lambda_{k}> = U_k^dagger |lambda_{k+1}>
             # Apply adjoint gate to lambda
-            mat_adj = mat.conj().transpose(1, 2)
-            lam = apply_gate(lam, mat_adj, targets, ctx.n_qubits)
+            # mat is U_k. We need U_k^dagger.
+            if mat.ndim == 3:
+                mat_adj = mat.conj().transpose(1, 2)
+            else:
+                mat_adj = mat.conj().T
+                
+            lam = apply_gate(lam, mat_adj, active_qubits, ctx.n_qubits)
             
             # 2. If parametric, compute deriv
             if p_idx is not None:
@@ -345,8 +421,21 @@ class PyTorchAdjointFunction(torch.autograd.Function):
                 gen_name = {'rx':'x', 'ry':'y', 'rz':'z', 'r1':'z'}.get(name)
                 
                 if gen_name:
+                    # Generator matrix (e.g. X, Y, Z)
+                    # For controlled rotation, dU/dt involves generator on target, controlled by same controls?
+                    # R(t) = exp(-i t/2 P). Controlled-R(t) = |0><0|I + |1><1|R(t).
+                    # d/dt CR(t) = |1><1| dR/dt = |1><1| (-i/2 P R(t)).
+                    # = ( |1><1| P ) * CR(t).
+                    # So Generator is P ONLY on target, but also controlled by controls!
+                    # G_full = Controlled-P.
+                    
                     gen_mat = get_gate_matrix_tensor(gen_name, None, lam.device)
-                    G_psi = apply_gate(psi_prev, gen_mat, targets, ctx.n_qubits)
+                    # Apply controls to generator matrix
+                    # Reuse get_gate_matrix_tensor logic or call it with controls?
+                    # get_gate_matrix_tensor now supports controls.
+                    gen_mat_controlled = get_gate_matrix_tensor(gen_name, None, lam.device, adjoint=False, controls=controls)
+                    
+                    G_psi = apply_gate(psi_prev, gen_mat_controlled, active_qubits, ctx.n_qubits)
                     
                     # Overlap
                     overlap = torch.sum(torch.conj(lam) * G_psi, dim=1)
