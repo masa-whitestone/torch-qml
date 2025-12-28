@@ -24,6 +24,11 @@ class PauliOperator:
     def single(cls, pauli_type: str, qubit: int) -> 'PauliOperator':
         """Create single Pauli operator"""
         return cls([(1.0, [(pauli_type, qubit)])])
+
+    def get_terms(self):
+        """Returns internal terms for introspection."""
+        return self.terms
+
     
     def __matmul__(self, other: 'PauliOperator') -> 'PauliOperator':
         """Tensor product (X(0) @ Z(1))"""
