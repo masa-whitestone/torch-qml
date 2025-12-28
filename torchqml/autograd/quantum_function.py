@@ -144,12 +144,13 @@ def _compute_gradients_adjoint(
     
     # Get gradient calculator
     # Prioritize Adjoint differentiation for performance (O(1)).
-    # Fallback to CentralDifference if Adjoint is not available (e.g. CPU-only envs).
+    # Fallback to ParameterShift (Exact O(2P)) if Adjoint is not available.
+    # CentralDifference is numerical and unstable/slow.
     if hasattr(cudaq.gradients, "Adjoint"):
         gradient = cudaq.gradients.Adjoint()
+    elif hasattr(cudaq.gradients, "ParameterShift"):
+        gradient = cudaq.gradients.ParameterShift()
     else:
-        # Warning only once? Or just fallback.
-        # print("Warning: Adjoint differentiation not found. using CentralDifference.")
         gradient = cudaq.gradients.CentralDifference()
     
     n_params = params.shape[1]
