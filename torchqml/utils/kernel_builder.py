@@ -23,10 +23,11 @@ def _hash_operations(n_qubits: int, operations: List[Dict], measure_all: bool) -
     # Parameters are excluded.
     structure = [str(n_qubits), str(measure_all)]
     for op in operations:
-        # Create a compact representation of the operation
-        # Sort targets and controls for consistent hashing if order doesn't matter (usually it does for sequence)
-        # Sequence matters!
-        op_str = f"{op['gate']}:{op['targets']}:{op.get('controls')}:{op.get('adjoint')}"
+        if isinstance(op, tuple):
+             gate, targets, controls, adjoint, p_idx = op
+             op_str = f"{gate}:{targets}:{controls}:{adjoint}"
+        else:
+            op_str = f"{op['gate']}:{op['targets']}:{op.get('controls')}:{op.get('adjoint')}"
         structure.append(op_str)
     
     struct_str = "|".join(structure)
@@ -62,11 +63,19 @@ def build_circuit_kernel(
     param_idx = 0
 
     
-    for op_data in operations:
-        gate = op_data["gate"]
-        targets = op_data["targets"]
-        controls = op_data.get("controls")
-        adjoint = op_data.get("adjoint", False)
+    # instructions: List[Tuple(name, targets, controls, adjoint, param_idx)]
+    for inst in operations:
+        # Check if it's new tuple format or old dict
+        if isinstance(inst, tuple):
+            gate, targets, controls, adjoint, p_idx = inst
+        else:
+            # Backward compatibility (though we refactored everything)
+            gate = inst.get("gate")
+            targets = inst.get("targets")
+            controls = inst.get("controls")
+            adjoint = inst.get("adjoint", False)
+        
+        # ... logic ...
         
         # Handle SWAP special case
         if gate == "swap":

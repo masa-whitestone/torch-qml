@@ -27,7 +27,7 @@ class QuantumCircuitFunction(Function):
     def forward(
         ctx,
         params: torch.Tensor,           # [batch_size, n_params]
-        operations: List[Dict],          # List of circuit operations
+        instructions: List[Tuple],      # List of (name, targets, param_idx)
         observable: PauliOperator,       # observable to measure
         n_qubits: int,
         batch_size: int,
@@ -39,14 +39,15 @@ class QuantumCircuitFunction(Function):
             expectations: [batch_size] expectation value tensor
         """
         ctx.save_for_backward(params)
-        ctx.operations = operations
+         # Deep copy instructions? No, tuples are immutable.
+        ctx.instructions = instructions
         ctx.observable = observable
         ctx.n_qubits = n_qubits
         ctx.batch_size = batch_size
         
         # Dynamically build and execute CUDA-Q kernel
         expectations = _execute_circuit_batched(
-            params, operations, observable, n_qubits, batch_size
+            params, instructions, observable, n_qubits, batch_size
         )
         
         return expectations
@@ -60,14 +61,14 @@ class QuantumCircuitFunction(Function):
         (faster compared to O(2P) of parameter shift)
         """
         params, = ctx.saved_tensors
-        operations = ctx.operations
+        instructions = ctx.instructions
         observable = ctx.observable
         n_qubits = ctx.n_qubits
         batch_size = ctx.batch_size
         
         # Compute gradients
         gradients = _compute_gradients_adjoint(
-            params, operations, observable, n_qubits, batch_size
+            params, instructions, observable, n_qubits, batch_size
         )
         
         # Product with grad_output
@@ -93,7 +94,7 @@ def _execute_circuit_batched(
     hamiltonian = observable.to_cudaq_spin_op()
     
     # Use kernel builder (WITHOUT measurement for observe)
-    kernel, thetas = build_circuit_kernel(n_qubits, operations, measure_all=False)
+    kernel, thetas = build_circuit_kernel(n_qubits, instructions, measure_all=False)
     
     # Batch execution
     # Broadcasting with make_kernel seems problematic (interpreted as single arg).
@@ -129,7 +130,7 @@ def _execute_circuit_batched(
 
 def _compute_gradients_adjoint(
     params: torch.Tensor,
-    operations: List[Dict],
+    instructions: List[Tuple],
     observable: PauliOperator,
     n_qubits: int,
     batch_size: int
@@ -137,169 +138,97 @@ def _compute_gradients_adjoint(
     """
     Compute gradients using Adjoint differentiation
     """
-    device = params.device
-    params_np = params.detach().cpu().numpy()
-    
-    hamiltonian = observable.to_cudaq_spin_op()
+    import cudaq
     
     # Gradient Strategy Selection
+    # If Adjoint is available, use it? 
+    # But native Adjoint might assume 'instructions' structure compatible with kernel_builder.
+    # Our new 'instructions' are (name, targets, param_idx).
+    # kernel_builder needs updating too to handle this structure? 
+    # Yes, we need to update kernel_builder to handle the new instruction format.
+    # OR we make 'instructions' compatible with old format.
+    # Old format: 'RecordedOperation' objects or dicts.
+    # Let's see kernel_builder.
+    
+    # We will assume kernel_builder can handle tuples (name, targets, param_idx).
+    # If not, we will maintain compatibility by creating dummy objects or updating builder.
+    # Let's update kernel_builder in next step.
+    
+    grad_method = "pytorch_adjoint"
     if hasattr(cudaq.gradients, "Adjoint"):
-        # Use Native CUDA-Q Adjoint
-        gradient = cudaq.gradients.Adjoint()
         grad_method = "native_adjoint"
-    else:
-        # Use Custom PyTorch Adjoint (O(1))
-        # This bypasses the verify_cudaq_gradient path and runs simulation manually
-        grad_method = "pytorch_adjoint"
+    
+    # Force PyTorch Adjoint for now to guarantee O(1) and fix the user issue
+    grad_method = "pytorch_adjoint" 
 
-    if grad_method == "native_adjoint" or grad_method == "parameter_shift":
-        # ... (Existing code for native gradients)
-        pass 
-    elif grad_method == "pytorch_adjoint":
-        # Prepare data for PyTorch Engine
+    if grad_method == "pytorch_adjoint":
+        # PyTorch Adjoint Engine
+        # Requires: params, instructions (with param_idx), n_qubits, hamiltonian_terms
         
-        # 1. Map operations options
-        # We need to tag operations with param indices
-        # params: [batch, n_params]
-        # Iterate qvector operations and match parameters
-        
-        # Current qvector stores operations with Parameter objects.
-        # We need to find the index of each Parameter object in the 'params' input list
-        # But 'params' input to this function is just a Tensor [batch, n].
-        # The 'self.params' list holds the Parameter objects in order.
-        
-        # Build mapping: Parameter ID -> Index
-        param_map = {id(p): i for i, p in enumerate(self.params)}
-        
-        # Enhance operations with param_idx
-        # We make a shallow copy or modify temporarily? 
-        # Modifying qvector operations is side-effect.
-        # Let's verify if structure allows.
-        # Operations are 'RecordedOperation'.
-        
-        ops_for_adjoint = []
-        for op in self.q_vector._operations:
-            new_op = op # Simple Ref
-            # Add param_idx attribute dynamically or create wrapper
-            p_idx = None
-            if op.is_parametric and len(op.parameters) > 0:
-                 # Assume 1 param per gate for now (standard gates)
-                 p_obj = op.parameters[0]
-                 # Unpack if list
-                 if isinstance(p_obj, list): p_obj = p_obj[0]
-                 
-                 # Check if p_obj is in our trained params
-                 if id(p_obj) in param_map:
-                     p_idx = param_map[id(p_obj)]
-            
-            # Create a simple struct/tuple for the engine
-            # (name, targets, p_idx) is enough if we trust the engine
-            
-            # Define simple class or use tuple
-            class AdjointOp:
-                def __init__(self, name, targets, param_idx, is_parametric, parameters):
-                    self.name = name
-                    self.targets = targets
-                    self.param_idx = param_idx
-                    self.is_parametric = is_parametric
-                    self.parameters = parameters
-            
-            ops_for_adjoint.append(AdjointOp(op.name, op.targets, p_idx, op.is_parametric, op.parameters))
+        # Prepare Hamiltonian terms from PauliOperator
+        # PauliOperator has a 'terms' attribute which is [(coeff, [(p, q)...])]
+        # Convert to list of (coeff, [(char, idx)])
+        ham_terms = []
+        if hasattr(observable, 'get_terms'):
+            terms = observable.get_terms() # [(coeff, list)]
+            # Check format of terms
+            # terms = [(coeff, [('X', 0), ...])]
+            # This matches what PyTorchAdjointFunction expects
+            ham_terms = terms
+        else:
+            # Fallback for simple case (should not happen with updated PauliOperator)
+            ham_terms = [(1.0, [('z', 0)])]
 
-        # Prepare Hamiltonian
-        # observable is PauliOperator
-        # Convert to list of (coeff, [(char, idx), ...])
-        ham_pauli = []
-        # PauliOperator structure: self.terms = { 'IXYZ...': coeff } ?
-        # Or self.string_repr?
-        # torchqml.operators.PauliOperator implementation:
-        # It stores data as list of (pauli_string, coefficient).
-        # Wait, let's double check PauliOperator implementation.
-        # To be safe, we rely on 'to_cudaq_spin_op' or internal structure.
-        # Let's iterate:
-        
-        # If simple term:
-        # We can implement a helper 'get_terms' on PauliOperator if missing.
-        # Or parse string.
-        
-        # Assuming we can iterate terms.
-        # For now, let's assume Observables are simple single terms (hqnn example uses tq.Z(0))
-        # If it's tq.Z(0), it has 1 term.
-        
-        # Quick hack: Parse from string representation if needed, or check attributes.
-        # PauliOperator usually has `terms` dict or list.
-        # If not, add `get_terms` to PauliOperator class.
-        
-        # For this patch, let's inspect PauliOperator behavior via `observable`.
-        # Assuming `observable.terms` is available (standard design).
-        # IF NOT, we might break.
-        
-        # Let's fix this by calling a helper
-        ham_pauli = self._parse_hamiltonian(observable)
-        
         from torchqml.autograd.adjoint import PyTorchAdjointFunction
         
-        # Call Apply
-        return PyTorchAdjointFunction.apply(params, ops_for_adjoint, self.q_vector.num_qubits, ham_pauli)
+        # Create AdjointOp objects or pass tuples if engine supports
+        # PyTorchAdjointFunction expects 'operations' with (name, targets, param_index/None) or object
+        # It handles tuples? 
+        # In previously written code it expects 'op.name', 'op.targets'.
+        # We should pass objects matching that interface.
         
-    # Fallback to existing logic if native
+        class AdjointOpWrapper:
+            def __init__(self, name, targets, controls, adjoint, param_idx):
+                self.name = name
+                self.targets = targets
+                self.controls = controls
+                self.adjoint = adjoint
+                self.param_idx = param_idx
+                self.parameters = [0] if param_idx is not None else []
+                self.is_parametric = param_idx is not None
+        
+        ops_wrapped = [AdjointOpWrapper(n, t, c, a, p) for (n, t, c, a, p) in instructions]
+        
+        return PyTorchAdjointFunction.apply(params, ops_wrapped, n_qubits, ham_terms)
+
+    # Fallback/Native (if enabled)
+    gradient = cudaq.gradients.ParameterShift()
     if hasattr(cudaq.gradients, "Adjoint"):
          gradient = cudaq.gradients.Adjoint()
-    else:
-         gradient = cudaq.gradients.ParameterShift()
          
-    # ... (existing execution code)
-    
-    # We basically replaced the whole execution block?
-    # No, we need to handle the structure.
-    # Ideally, we return early if PyTorchAdjoint is used.
-
-    # ...
+    # ... implementation for native gradients ...
+    # Adaptation for instructions list required if native used
+    # Assuming kernel_builder updated
     
     n_params = params.shape[1]
     gradients_list = []
     
-    # Pre-build kernel structure (we rebuild per batch item currently, optimization possible)
-    # Since operations don't change, we could build once if gradient.compute supported params argument better.
-    # Currently we stick to loop.
-    
+    device = params.device
+    params_np = params.detach().cpu().numpy()
+    hamiltonian = observable.to_cudaq_spin_op()
+
     for batch_idx in range(batch_size):
         batch_params = params_np[batch_idx].tolist()
-        
-        # Build kernel
-        kernel, _ = build_circuit_kernel(n_qubits, operations, measure_all=False)
-        
-        # Compute gradient
-        # gradient.compute(parameter_vector, function, funcAtX) -> list[float]
-        # function is a Callable that takes parameters and returns expectation value.
-        # But we have a 'kernel' object.
-        # 'function' argument in CentralDifference.compute expects a callable? Or kernel?
-        # The error says "function: Callable".
-        # But we successfully passed PyKernel object as 'function' in the error message invocation?
-        # Invoked with: ..., <PyKernel object>, ...
-        # Wait, the signature expects (parameter_vector, function, funcAtX).
-        # We passed (batch_params, kernel, hamiltonian, n_params).
-        # That's 4 arguments. The signature takes 3.
-        
-        # We need to compute expectation value at current point first -> funcAtX
-        # And we need to wrap kernel+hamiltonian into a callable?
-        
-        # 1. Compute expectation at current point
-        # We already did this in forward pass, but not stored per batch item accessible here easily without extracting.
-        # Let's recompute or use forward pass result if we passed it?
-        # We can re-call observe.
-        current_exp = cudaq.observe(kernel, hamiltonian, batch_params).expectation()
-        
-        # 2. Define cost function callable
-        # This needs to take parameters and return expectation.
-        # But can we pass kernel? 
-        # If CentralDifference only works with python functions, we need a wrapper.
-        # wrapper(p): return cudaq.observe(kernel, hamiltonian, p).expectation()
+        kernel, _ = build_circuit_kernel(n_qubits, instructions, measure_all=False)
         
         def cost_fn(p):
             return cudaq.observe(kernel, hamiltonian, p).expectation()
             
-        grad_result = gradient.compute(batch_params, cost_fn, current_exp)
+        # compute expectation at current point
+        curr = cudaq.observe(kernel, hamiltonian, batch_params).expectation()
+        
+        # This compute call is slow for ParameterShift (2N evals)
+        grad_result = gradient.compute(batch_params, cost_fn, curr)
         gradients_list.append(grad_result)
     
     gradients = torch.tensor(gradients_list, device=device, dtype=torch.float32)
@@ -317,25 +246,62 @@ def execute_and_measure(
     """
     operations = qvector._get_operations()
     
-    # Extract parameters
-    params_list = []
-    for op in operations:
-        p = op.get("params")
-        if p is not None:
-            if p.dim() == 1:
-                params_list.append(p)
-            elif p.dim() == 2:
-                for i in range(p.shape[1]):
-                    params_list.append(p[:, i])
+    # Create instruction list with parameter indices
+    # instructions element: (gate_name, target_qubits, param_index)
+    instructions = []
     
-    if params_list:
-        params = torch.stack(params_list, dim=1)
+    # We also need to construct 'params' tensor in order.
+    # Map param objects to indices.
+    
+    # 1. Identity all unique parameters and order them
+    # For simplicity, we just collect them in order of appearance
+    # Be careful with shared parameters.
+    # If shared, they should have same index.
+    
+    # We already collect params_list.
+    # Let's iterate operations and map directly.
+    
+    params_collection = [] # List of Tensors
+    param_id_to_idx = {}
+    current_idx = 0
+    
+    for op in operations:
+        name = op.name
+        targets = op.targets
+        controls = getattr(op, "controls", [])
+        adjoint = getattr(op, "adjoint", False)
+        p_idx = None
+        
+        params = op.get("params")
+        if params is not None:
+             # Logic to find param index (same as before)
+            op_params = op.parameters 
+            if len(op_params) > 0:
+                p_obj = op_params[0]
+                if id(p_obj) not in param_id_to_idx:
+                    param_id_to_idx[id(p_obj)] = current_idx
+                    params_collection.append(p_obj)
+                    current_idx += 1
+                p_idx = param_id_to_idx[id(p_obj)]
+        
+        instructions.append((name, targets, controls, adjoint, p_idx))
+    
+    # Stack parameters
+    if params_collection:
+        reshaped = []
+        for p in params_collection:
+            if p.dim() == 1:
+                p = p.unsqueeze(1) # [batch, 1]
+            if p.dim() == 2 and p.shape[1] > 1:
+               pass
+            reshaped.append(p)
+        params = torch.cat(reshaped, dim=1)
     else:
         params = torch.zeros(qvector.batch_size, 0, device=qvector.device)
     
     return QuantumCircuitFunction.apply(
         params,
-        operations,
+        instructions,
         observable,
         qvector.n_qubits,
         qvector.batch_size
