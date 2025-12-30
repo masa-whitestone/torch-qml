@@ -4,9 +4,18 @@ PyTorch Quantum Machine Learning with cuQuantum - Fast Adjoint Differentiation
 
 ## Features
 
-- **Adjoint Differentiation**: O(G) gradient calculation using cuQuantum's `custatevec`.
+- **Adjoint Differentiation**: O(G) gradient calculation using cuQuantum's `custatevec` and optimized C++ kernels.
 - **PyTorch Native**: Fully integrated with `torch.autograd` and `torch.nn`.
-- **Pure Python**: No C++ build required, utilizing `cupy` and `cuquantum-python`.
+- **High Performance**: Custom C++/CUDA extension reusing cuStateVec/cuBLAS handles for minimize overhead.
+
+## Performance
+TorchQML outperforms PennyLane's `lightning.gpu` backend significantly on NVIDIA GPUs (measured on T4):
+
+| Qubits | Layers | TorchQML (ms) | PennyLane (ms) | Speedup |
+| :--- | :--- | :--- | :--- | :--- |
+| 4 | 5 | 5.72 | 16.99 | **3.0x** |
+| 8 | 10 | 13.18 | 48.69 | **3.7x** |
+| 12 | 10 | 24.29 | 69.65 | **2.9x** |
 
 ## Installation
 
