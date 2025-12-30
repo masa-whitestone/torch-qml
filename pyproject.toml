@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchqml"
-version = "0.1.0"
+version = "0.1.1"
 description = "PyTorch Quantum Machine Learning with cuQuantum - Fast Adjoint Differentiation"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Masaki", email = "masaki@example.com"}
+    {name = "Masaki Shiraishi", email = "masaki.shiraishi@fuji.waseda.jp"}
 ]
 requires-python = ">=3.8"
 classifiers = [
