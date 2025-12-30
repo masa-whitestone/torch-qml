@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "wheel", "cmake", "pybind11", "cuquantum-python-cu12", "nvidia-cuda-nvcc-cu12", "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"]
 build-backend = "setuptools.build_meta"
 
 [project]

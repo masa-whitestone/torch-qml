@@ -1,94 +1,60 @@
 """
 PyTorch autograd統合
-
-torch.autograd.Functionを使用してAdjoint Differentiationを統合
 """
 
 import torch
 from torch.autograd import Function
-from typing import List, Tuple, Any
 import numpy as np
 
-from .backend import AdjointDifferentiator, GateOp
+from .backend import AdjointDifferentiator, GateOp, HAS_CPP_BACKEND
 
 
 class QuantumExpectation(Function):
-    """
-    量子期待値計算のためのautograd Function
-    
-    forward: 期待値を計算
-    backward: Adjoint Differentiationで勾配を計算
-    """
-    
     @staticmethod
-    def forward(
-        ctx,
-        params: torch.Tensor,                              # [batch_size, n_params]
-        operations: List[GateOp],                          # 回路操作
-        observable: List[Tuple[float, List[Tuple[str, int]]]],  # ハミルトニアン
-        n_qubits: int
-    ) -> torch.Tensor:
-        """Forward pass"""
-        
+    def forward(ctx, params, operations, observable, n_qubits):
         device = params.device
-        params_np = params.detach().cpu().numpy()
+        # C++ backend expects float32 numpy on CPU (it handles transfer to GPU internally or expects pointers)
+        # In this impl, we pass CPU numpy to C++.
+        params_np = params.detach().cpu().numpy().astype(np.float32) 
+        # If params is batch, shape (batch, n_params)
+        if params_np.ndim == 1:
+            params_np = params_np.reshape(1, -1)
         
-        # Adjoint Differentiatorを使用
         diff = AdjointDifferentiator(n_qubits)
         
         if params.requires_grad:
-            # 勾配が必要な場合: forward + gradientを同時計算
-            expectations, gradients = diff.forward_and_gradient(
+            exp_vals, grads = diff.forward_and_gradient(
                 params_np, operations, observable
             )
-            # 勾配を保存
-            ctx.save_for_backward(torch.from_numpy(gradients).to(device))
+            # grads returned as numpy
+            ctx.save_for_backward(torch.from_numpy(grads).to(device))
         else:
-            # 勾配不要の場合: forward only
-            expectations = diff.forward_only(params_np, operations, observable)
+            exp_vals = diff.forward_only(params_np, operations, observable)
         
         ctx.device = device
-        
-        return torch.from_numpy(expectations).float().to(device)
+        result = torch.from_numpy(exp_vals).float().to(device)
+        return result.squeeze() if result.numel() == 1 else result
     
     @staticmethod
-    def backward(ctx, grad_output: torch.Tensor):
-        """Backward pass"""
-        
-        gradients, = ctx.saved_tensors
-        
-        # grad_output: [batch_size]
-        # gradients: [batch_size, n_params]
-        # チェーンルール: grad_params = gradients * grad_output.unsqueeze(1)
-        
-        grad_params = gradients.float() * grad_output.unsqueeze(1)
-        
-        # operations, observable, n_qubits には勾配なし
-        return grad_params, None, None, None
+    def backward(ctx, grad_output):
+        # grad_output: (batch_size)
+        if ctx.needs_input_grad[0]:
+            grads, = ctx.saved_tensors
+            # grads: (batch_size, n_params)
+            # grad_output: (batch_size) or scalar
+            
+            if grad_output.ndim == 0:
+                grad_output = grad_output.unsqueeze(0)
+                
+            if grads.shape[0] != grad_output.shape[0]:
+                 # Broadcasting check or error
+                 pass
 
+            # Chain rule: dL/dParam = dL/dExp * dExp/dParam
+            # element-wise multiply for batch
+            grad_input = grads * grad_output.unsqueeze(1)
+            return grad_input, None, None, None
+        return None, None, None, None
 
-def quantum_expectation(
-    params: torch.Tensor,
-    circuit: 'QuantumCircuit',
-    observable: 'PauliOperator'
-) -> torch.Tensor:
-    """
-    量子期待値を計算する関数API
-    
-    Args:
-        params: パラメータ [batch_size, n_params] or [n_params]
-        circuit: 量子回路
-        observable: 観測量
-    
-    Returns:
-        期待値 [batch_size]
-    """
-    if params.dim() == 1:
-        params = params.unsqueeze(0)
-    
-    return QuantumExpectation.apply(
-        params,
-        circuit.operations,
-        observable.to_observable(),
-        circuit.n_qubits
-    )
+def quantum_expectation(params, operations, observable, n_qubits):
+    return QuantumExpectation.apply(params, operations, observable, n_qubits)
