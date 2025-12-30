@@ -9,7 +9,9 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 endif()
 
 # CUDA
-find_package(CUDAToolkit REQUIRED)
+# CUDA
+# We handle library paths manually in setup.py for pip installs, so Toolkit is optional/quiet
+find_package(CUDAToolkit QUIET)
 
 # Python
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
