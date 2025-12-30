@@ -9,6 +9,30 @@ from enum import Enum
 
 # C++ バックエンドを試行
 try:
+    # 共有ライブラリのプリロード（Linux等でRPATH解決できない場合のため）
+    import os
+    import ctypes
+    import sys
+    
+    def _preload_libs():
+        try:
+            import cuquantum
+            lib_dir = os.path.join(os.path.dirname(cuquantum.__file__), 'lib')
+            if os.path.exists(lib_dir):
+                # libcustatevec.so.1 を探す
+                for f in os.listdir(lib_dir):
+                    if f.startswith("libcustatevec.so"):
+                        lib_path = os.path.join(lib_dir, f)
+                        try:
+                            ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                            # print(f"Preloaded {lib_path}")
+                        except OSError:
+                            pass
+        except ImportError:
+            pass
+
+    _preload_libs()
+
     from ._C import (
         StateVector as StateVectorCpp,
         adjoint_differentiate as adjoint_differentiate_cpp,
@@ -18,9 +42,9 @@ try:
     )
     HAS_CPP_BACKEND = True
     print("Using C++ backend")
-except ImportError:
+except ImportError as e:
     HAS_CPP_BACKEND = False
-    print("Warning: C++ backend not available. Using Python fallback.")
+    print(f"Warning: C++ backend not available ({e}). Using Python fallback.")
 
 
 class GateType(Enum):
