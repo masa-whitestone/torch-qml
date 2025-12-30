@@ -13,9 +13,9 @@ TorchQML outperforms PennyLane's `lightning.gpu` backend significantly on NVIDIA
 
 | Qubits | Layers | TorchQML (ms) | PennyLane (ms) | Speedup |
 | :--- | :--- | :--- | :--- | :--- |
-| 4 | 5 | 5.72 | 16.99 | **3.0x** |
-| 8 | 10 | 13.18 | 48.69 | **3.7x** |
-| 12 | 10 | 24.29 | 69.65 | **2.9x** |
+| 4 | 5 | 145.27 | 398.54 | **2.7x** |
+| 8 | 10 | 251.39 | 644.85 | **2.6x** |
+| 12 | 10 | 468.82 | 961.92 | **2.1x** |
 
 ## Installation
 
