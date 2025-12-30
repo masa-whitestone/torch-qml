@@ -1,0 +1,4 @@
+include CMakeLists.txt
+include pyproject.toml
+include README.md
+recursive-include csrc *
