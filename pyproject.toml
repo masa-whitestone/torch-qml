@@ -1,21 +1,69 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "torchqml"
 version = "0.1.0"
-description = "PyTorch-native Quantum Machine Learning with CUDA-Q backend"
+description = "PyTorch Quantum Machine Learning with cuQuantum - Fast Adjoint Differentiation"
 readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Masaki", email = "masaki@example.com"}
+]
 requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = ["quantum", "machine learning", "pytorch", "cuquantum", "adjoint differentiation"]
+
 dependencies = [
     "torch>=2.0.0",
-    "numpy",
+    "numpy>=1.20.0",
+    "cupy-cuda12x>=12.0.0",
+    "cuquantum-python-cu12", 
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+]
+benchmark = [
+    "pennylane>=0.30.0",
+    "pennylane-lightning[gpu]>=0.30.0",
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/masa-whitestone/torch-qml"
+"Bug Reports" = "https://github.com/masa-whitestone/torch-qml/issues"
+"Source" = "https://github.com/masa-whitestone/torch-qml"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["torchqml*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

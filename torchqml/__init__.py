@@ -1,95 +1,61 @@
 """
-torchqml - PyTorch-native Quantum Machine Learning with CUDA-Q backend
+torchqml - PyTorch Quantum Machine Learning with cuQuantum
 
-Usage:
-    import torchqml as tq
-    
-    tq.set_backend("nvidia")
-    
-    class MyCircuit(tq.QuantumModule):
-        def __init__(self):
-            super().__init__()
-            self.theta = tq.Parameter((2,))
-        
-        def forward(self, x):
-            q = tq.qvector(2, x.shape[0], device=x.device)
-            tq.ry(x[:, 0], q[0])
-            tq.rx(self.theta[0], q[0])
-            tq.cx(q[0], q[1])
-            return tq.expval(q, tq.Z(0))
+Fast Adjoint Differentiation implementation with cuQuantum backend.
 """
 
 __version__ = "0.1.0"
 
-# Backend configuration
-from .backends.config import (
-    set_backend,
-    get_backend,
-    backend,
-    set_random_seed,
-)
-
-# Core
-from .core.qvector import qvector, QVector
-from .core.parameter import Parameter
-from .core.module import QuantumModule
-
-# Gates - Single qubit
-from .gates.single import h, x, y, z, s, t
-
-# Gates - Parametric
-from .gates.parametric import rx, ry, rz, r1, u3
-
-# Gates - Two qubit
-from .gates.two_qubit import cx, cy, cz, swap
+# Circuit
+from .circuit import QuantumCircuit
 
 # Operators
-from .operators.pauli import X, Y, Z, I, PauliOperator
+from .operators import X, Y, Z, I, PauliOperator
 
-# Measurement
-from .measure.expval import expval
-from .measure.sample import sample
-from .measure.state import state
+# Gates (for direct import)
+from .gates import (
+    H, X as XGate, Y as YGate, Z as ZGate, S, T,
+    RX, RY, RZ,
+    CNOT, CX, CZ, SWAP
+)
 
-# Layers
-from .layers.strongly_entangling import StronglyEntangling
+# nn.Module layers
+from .nn import (
+    QuantumLayer,
+    HybridQuantumLayer,
+    StronglyEntanglingLayer
+)
 
-# Utils
-from .utils import get_device
+# Autograd
+from .autograd import QuantumExpectation, quantum_expectation
+
+# Functional API
+from . import functional
 
 __all__ = [
     # Version
     "__version__",
     
-    # Backend
-    "set_backend",
-    "get_backend", 
-    "backend",
-    "set_random_seed",
-    
-    # Core
-    "qvector",
-    "QVector",
-    "Parameter",
-    "QuantumModule",
-    
-    # Gates
-    "h", "x", "y", "z", "s", "t",
-    "rx", "ry", "rz", "r1", "u3",
-    "cx", "cy", "cz", "swap",
-    
-    # Layers
-    "StronglyEntangling",
+    # Circuit
+    "QuantumCircuit",
     
     # Operators
-    "X", "Y", "Z", "I",
-    "PauliOperator",
+    "X", "Y", "Z", "I", "PauliOperator",
     
-    # Measurement
-    "expval",
-    "sample",
-    "state",
+    # Gates
+    "H", "XGate", "YGate", "ZGate", "S", "T",
+    "RX", "RY", "RZ",
+    "CNOT", "CX", "CZ", "SWAP",
     
-    # Utils
-    "get_device",
+    # Layers
+    "QuantumLayer",
+    "HybridQuantumLayer", 
+    "StronglyEntanglingLayer",
+    
+    # Autograd
+    "QuantumExpectation",
+    "quantum_expectation",
+    
+    # Functional
+    "functional",
 ]
