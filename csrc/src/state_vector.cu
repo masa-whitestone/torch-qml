@@ -561,69 +561,14 @@ void StateVector::apply_swap(int qubit1, int qubit2) {
 // ========== 期待値計算 ==========
 
 // Z期待値計算カーネル
-__global__ void expectation_z_kernel(
-    const cuComplex* state,
-    int64_t dim,
-    int qubit,
-    float* result
-) {
-    extern __shared__ float sdata[];
-    
-    int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int tid = threadIdx.x;
-    
-    float local_sum = 0.0f;
-    
-    while (idx < dim) {
-        float prob = cuCrealf(state[idx]) * cuCrealf(state[idx]) + 
-                     cuCimagf(state[idx]) * cuCimagf(state[idx]);
-        int bit = (idx >> qubit) & 1;
-        local_sum += bit ? -prob : prob;
-        idx += blockDim.x * gridDim.x;
-    }
-    
-    sdata[tid] = local_sum;
-    __syncthreads();
-    
-    // リダクション
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
-        __syncthreads();
-    }
-    
-    if (tid == 0) {
-        atomicAdd(result, sdata[0]);
-    }
-}
-
-
 float StateVector::expectation_z(int qubit) {
     if (use_double_) {
         throw std::runtime_error("Double precision expectation not implemented");
     }
     
-    float* d_result;
-    CUDA_CHECK(cudaMalloc(&d_result, sizeof(float)));
-    CUDA_CHECK(cudaMemset(d_result, 0, sizeof(float)));
-    
-    int block_size = 256;
-    int num_blocks = (dim_ + block_size - 1) / block_size;
-    num_blocks = std::min(num_blocks, 1024);
-    
-    expectation_z_kernel<<<num_blocks, block_size, block_size * sizeof(float)>>>(
-        static_cast<cuComplex*>(d_state_),
-        dim_,
-        qubit,
-        d_result
-    );
-    
-    float result;
-    CUDA_CHECK(cudaMemcpy(&result, d_result, sizeof(float), cudaMemcpyDeviceToHost));
-    cudaFree(d_result);
-    
-    return result;
+    // Use expectation_pauli implementation which is verified to work
+    std::vector<std::pair<char, int>> paulis = {{'Z', qubit}};
+    return expectation_pauli(paulis);
 }
 
 
